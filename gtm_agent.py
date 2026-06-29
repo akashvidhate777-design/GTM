@@ -99,7 +99,26 @@ def get_google_credentials(credentials_path: str, token_path: str) -> Credential
     return creds
 
 
-def read_sheet_rows(sheets_service, sheet_id: str, range_name: str = "A:F"):
+LINKEDIN_ALIASES = ["LinkedIn URL", "Person Linkedin Url", "LinkedIn"]
+
+
+def normalize_contact(contact: dict) -> dict:
+    """Map common Apollo/export header variants onto the Name/LinkedIn URL fields the agent expects."""
+    normalized = dict(contact)
+    if not normalized.get("Name", "").strip():
+        first = contact.get("First Name", "").strip()
+        last = contact.get("Last Name", "").strip()
+        if first or last:
+            normalized["Name"] = f"{first} {last}".strip()
+    if not normalized.get("LinkedIn URL", "").strip():
+        for alias in LINKEDIN_ALIASES:
+            if contact.get(alias, "").strip():
+                normalized["LinkedIn URL"] = contact[alias].strip()
+                break
+    return normalized
+
+
+def read_sheet_rows(sheets_service, sheet_id: str, range_name: str = "A:Z"):
     result = (
         sheets_service.spreadsheets()
         .values()
@@ -185,7 +204,7 @@ def is_valid_email(addr: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="GTM outbound agent")
     parser.add_argument("--sheet-id", required=True, help="Google Sheet ID")
-    parser.add_argument("--range", default="A:F", help="Sheet range to read (default A:F)")
+    parser.add_argument("--range", default="A:Z", help="Sheet range to read (default A:Z)")
     parser.add_argument(
         "--credentials",
         default=os.path.expanduser("~/.gtm-agent/credentials.json"),
@@ -221,6 +240,7 @@ def main():
         if args.limit and processed >= args.limit:
             break
 
+        contact = normalize_contact(contact)
         name = contact.get("Name", "").strip()
         email_addr = contact.get("Email", "").strip()
         existing_status = contact.get("Status", "").strip()
