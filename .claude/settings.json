@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "google-sheets": {
+      "command": "npx",
+      "args": ["-y", "mcp-google-sheets@latest"],
+      "env": {
+        "CREDENTIALS_PATH": "${HOME}/.gtm-agent/credentials.json",
+        "TOKEN_PATH": "${HOME}/.gtm-agent/sheets-token.json"
+      }
+    },
+    "gmail": {
+      "command": "npx",
+      "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+      "env": {
+        "GMAIL_CREDENTIALS_PATH": "${HOME}/.gtm-agent/credentials.json",
+        "GMAIL_TOKEN_PATH": "${HOME}/.gtm-agent/gmail-token.json"
+      }
+    }
+  }
+}
