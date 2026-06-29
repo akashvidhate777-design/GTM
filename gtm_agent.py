@@ -204,6 +204,14 @@ def main():
         log.error("ANTHROPIC_API_KEY environment variable is not set.")
         sys.exit(1)
 
+    if not os.path.exists(args.credentials):
+        log.error(
+            "Google OAuth credentials not found at %s. "
+            "See README.md for setup instructions, or pass --credentials.",
+            args.credentials,
+        )
+        sys.exit(1)
+
     creds = get_google_credentials(args.credentials, args.token)
     sheets_service = build("sheets", "v4", credentials=creds)
     gmail_service = build("gmail", "v1", credentials=creds)
