@@ -1,0 +1,81 @@
+{
+  "name": "WF-3 Campaign Reporting",
+  "nodes": [
+    {
+      "id": "cron-report",
+      "name": "Every day 18:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-480, 0],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 18 * * *" }] }
+      }
+    },
+    {
+      "id": "read-sheet",
+      "name": "Read leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-240, 0],
+      "parameters": {
+        "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $env.GOOGLE_SHEET_ID }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Leads" },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "id": "aggregate",
+      "name": "Aggregate funnel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "jsCode": "const rows = items.map(i => i.json).filter(r => r.Email);\nconst count = (fn) => rows.filter(fn).length;\nconst by = (key) => rows.reduce((acc, r) => { const k = String(r[key] || 'unknown').trim() || 'unknown'; acc[k] = (acc[k] || 0) + 1; return acc; }, {});\nconst statuses = by('Status');\nconst grades = by('Lead Grade');\nconst sent = Object.entries(statuses).filter(([k]) => k.startsWith('Sent')).reduce((a, [, v]) => a + v, 0) + (statuses['Replied'] || 0);\nconst replied = statuses['Replied'] || 0;\nconst scores = rows.map(r => Number(r['Lead Score'])).filter(n => !isNaN(n));\nreturn [{ json: {\n  date: new Date().toISOString().slice(0, 10),\n  total: rows.length,\n  avgScore: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 10) / 10 : 0,\n  grades, statuses, sent, replied,\n  replyRate: sent ? Math.round(replied / sent * 1000) / 10 : 0,\n  approved: statuses['Approved'] || 0,\n  awaitingApproval: statuses['Draft'] || 0,\n  bounced: statuses['Bounced'] || 0\n} }];"
+      }
+    },
+    {
+      "id": "slack-report",
+      "name": "Slack: daily campaign report",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [240, -100],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "={{ $env.SLACK_REPORTS_CHANNEL }}" },
+        "text": "=:bar_chart: *Outreach campaign report — {{ $json.date }}*\n\n*Pipeline:* {{ $json.total }} leads · avg score {{ $json.avgScore }}\n*Grades:* {{ Object.entries($json.grades).map(([k, v]) => `${k}: ${v}`).join(' · ') }}\n*Funnel:* {{ Object.entries($json.statuses).map(([k, v]) => `${k}: ${v}`).join(' · ') }}\n\n:email: Sent *{{ $json.sent }}* · :speech_balloon: Replied *{{ $json.replied }}* · Reply rate *{{ $json.replyRate }}%*\n:hourglass: Awaiting approval: *{{ $json.awaitingApproval }}* · Approved & queued: *{{ $json.approved }}* · Bounced: *{{ $json.bounced }}*",
+        "otherOptions": {}
+      },
+      "credentials": { "slackApi": { "name": "Slack Bot" } }
+    },
+    {
+      "id": "hubspot-note",
+      "name": "HubSpot: log campaign snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { hs_timestamp: Date.now(), hs_note_body: `Outreach campaign snapshot ${$json.date}: ${$json.total} leads, sent ${$json.sent}, replied ${$json.replied} (${$json.replyRate}%). Funnel: ${JSON.stringify($json.statuses)}` } }) }}"
+      },
+      "credentials": { "httpHeaderAuth": { "name": "HubSpot Bearer token" } }
+    }
+  ],
+  "connections": {
+    "Every day 18:00": { "main": [[{ "node": "Read leads", "type": "main", "index": 0 }]] },
+    "Read leads": { "main": [[{ "node": "Aggregate funnel", "type": "main", "index": 0 }]] },
+    "Aggregate funnel": { "main": [[
+      { "node": "Slack: daily campaign report", "type": "main", "index": 0 },
+      { "node": "HubSpot: log campaign snapshot", "type": "main", "index": 0 }
+    ]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "Asia/Kolkata" }
+}

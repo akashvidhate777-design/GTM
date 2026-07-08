@@ -1,0 +1,165 @@
+{
+  "name": "WF-1 Lead Intake & Scoring",
+  "nodes": [
+    {
+      "id": "trigger-schedule",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-600, 0],
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 6 }] }
+      }
+    },
+    {
+      "id": "trigger-webhook",
+      "name": "Manual intake webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-600, 200],
+      "parameters": { "httpMethod": "POST", "path": "lead-intake" }
+    },
+    {
+      "id": "read-sheet",
+      "name": "Read leads (Google Sheets)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-360, 100],
+      "parameters": {
+        "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $env.GOOGLE_SHEET_ID }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Leads" },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "id": "filter-new",
+      "name": "Only unscored rows",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-120, 100],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json['Lead Score'] }}",
+              "operator": { "type": "string", "operation": "empty" }
+            },
+            {
+              "leftValue": "={{ $json['Email'] }}",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "claude-score",
+      "name": "Claude: news + score + sequence",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [140, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-5',\n  max_tokens: 3000,\n  tools: [\n    { type: 'web_search_20250305', name: 'web_search', max_uses: 2 },\n    { name: 'submit_scored_lead', description: 'Submit lead score, news signal and full 3-step LinkedIn+email sequence.', input_schema: { type: 'object', properties: {\n        lead_score: { type: 'integer' }, lead_grade: { type: 'string' }, icp_tier: { type: 'string' }, persona: { type: 'string' }, news_signal: { type: 'string' },\n        linkedin_connection: { type: 'string' }, linkedin_followup_1: { type: 'string' }, linkedin_followup_2: { type: 'string' },\n        email_1_subject: { type: 'string' }, email_1_body: { type: 'string' }, email_2_subject: { type: 'string' }, email_2_body: { type: 'string' }, email_3_subject: { type: 'string' }, email_3_body: { type: 'string' }\n      }, required: ['lead_score','lead_grade','icp_tier','persona','linkedin_connection','linkedin_followup_1','linkedin_followup_2','email_1_subject','email_1_body','email_2_subject','email_2_body','email_3_subject','email_3_body'] } }\n  ],\n  messages: [{ role: 'user', content: `You are an outbound SDR agent selling AI solutions that plug into existing ERP software for small high-impact use cases across retail ecosystems.\\n\\nLead: ${$json['First Name']} ${$json['Last Name']}, ${$json['Title']} at ${$json['Company']} (${$json['Industry']}, ${$json['# Employees']} employees, ${$json['City']}, ${$json['Country']}).\\n\\n1. Search the web for news from the last 90 days about ${$json['Company']} (expansion, digital transformation, ERP/tech investment, funding). Summarize in one line as news_signal (empty string if nothing).\\n2. Score the lead 0-100 using: ICP title tier max 40 (C-suite/Founder 40, VP 30, Director/Head 24, Manager 12, other 5); function relevance max 15 (ops/supply-chain/tech/finance high); industry fit max 25 (retail ecosystem core 25, adjacent supply side 16, other 6); company scale max 10 (mid-market sweet spot); revenue max 5; data completeness max 5; news bonus max 5. Grade: A>=90, B 75-89, C 55-74, D<55.\\n3. Write the 3-step sequence (LinkedIn connection <=300 chars + 2 follow-ups; 3 emails with subject and body <=120 words). Mention the company by name, angle by persona, never invent statistics or customers, use placeholders {{SENDER_NAME}} and {{CALENDLY_URL}} in email bodies, opt-out line in email 3.\\n\\nCall submit_scored_lead.` }],\n  tool_choice: { type: 'auto' }\n}) }}"
+      },
+      "credentials": { "httpHeaderAuth": { "name": "Anthropic x-api-key" } }
+    },
+    {
+      "id": "parse",
+      "name": "Extract tool result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 0],
+      "parameters": {
+        "jsCode": "const lead = $('Only unscored rows').item.json;\nconst content = $json.content || [];\nconst tool = content.filter(b => b.type === 'tool_use' && b.name === 'submit_scored_lead').pop();\nif (!tool) { throw new Error('No submit_scored_lead tool call in Claude response'); }\nconst r = tool.input;\nreturn [{ json: { ...lead,\n  'Lead Score': r.lead_score, 'Lead Grade': r.lead_grade, 'ICP Tier': r.icp_tier,\n  'Persona': r.persona, 'News Signal': r.news_signal || '',\n  'LinkedIn Connection Message': r.linkedin_connection,\n  'LinkedIn Follow-Up 1': r.linkedin_followup_1, 'LinkedIn Follow-Up 2': r.linkedin_followup_2,\n  'Email 1 Subject': r.email_1_subject, 'Email 1 Body': r.email_1_body,\n  'Email 2 Subject': r.email_2_subject, 'Email 2 Body': r.email_2_body,\n  'Email 3 Subject': r.email_3_subject, 'Email 3 Body': r.email_3_body,\n  'Status': r.lead_score >= 55 ? 'Draft' : 'Parked - Low Score', 'Sequence Step': 0\n} }];"
+      }
+    },
+    {
+      "id": "write-sheet",
+      "name": "Write score + messages back",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [620, 0],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $env.GOOGLE_SHEET_ID }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Leads" },
+        "columns": { "mappingMode": "autoMapInputData", "matchingColumns": ["Email"] },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "id": "slack-approval",
+      "name": "Slack approval request",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [860, 0],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "={{ $env.SLACK_APPROVALS_CHANNEL }}" },
+        "text": "=*New scored lead: {{ $json['First Name'] }} {{ $json['Last Name'] }}* — {{ $json.Title }} @ {{ $json.Company }}\nScore: *{{ $json['Lead Score'] }}* ({{ $json['Lead Grade'] }}) · {{ $json.Persona }}\nNews: {{ $json['News Signal'] || 'none' }}\n\n*LinkedIn connection:*\n> {{ $json['LinkedIn Connection Message'] }}\n\n*Email 1 — {{ $json['Email 1 Subject'] }}:*\n> {{ $json['Email 1 Body'] }}\n\nApprove: `POST {{ $env.WEBHOOK_URL }}webhook/slack-approval` with `{\"email\": \"{{ $json.Email }}\", \"action\": \"approve\"}` — or flip Status to *Approved* in the sheet.",
+        "otherOptions": {}
+      },
+      "credentials": { "slackApi": { "name": "Slack Bot" } }
+    },
+    {
+      "id": "approval-webhook",
+      "name": "Approval webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [140, 320],
+      "parameters": { "httpMethod": "POST", "path": "slack-approval" }
+    },
+    {
+      "id": "approve-row",
+      "name": "Set Status = Approved",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [380, 320],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $env.GOOGLE_SHEET_ID }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Leads" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["Email"],
+          "value": {
+            "Email": "={{ $json.body.email }}",
+            "Status": "={{ $json.body.action === 'approve' ? 'Approved' : 'Draft' }}"
+          }
+        },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    }
+  ],
+  "connections": {
+    "Every 6 hours": { "main": [[{ "node": "Read leads (Google Sheets)", "type": "main", "index": 0 }]] },
+    "Manual intake webhook": { "main": [[{ "node": "Read leads (Google Sheets)", "type": "main", "index": 0 }]] },
+    "Read leads (Google Sheets)": { "main": [[{ "node": "Only unscored rows", "type": "main", "index": 0 }]] },
+    "Only unscored rows": { "main": [[{ "node": "Claude: news + score + sequence", "type": "main", "index": 0 }], []] },
+    "Claude: news + score + sequence": { "main": [[{ "node": "Extract tool result", "type": "main", "index": 0 }]] },
+    "Extract tool result": { "main": [[{ "node": "Write score + messages back", "type": "main", "index": 0 }]] },
+    "Write score + messages back": { "main": [[{ "node": "Slack approval request", "type": "main", "index": 0 }]] },
+    "Approval webhook": { "main": [[{ "node": "Set Status = Approved", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "Asia/Kolkata" }
+}
