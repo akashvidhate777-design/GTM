@@ -10,6 +10,8 @@ Slack + HubSpot), and reports campaign performance daily.
 **Start here:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system
 orchestration, workflow diagram, scoring model.
 API matrix: [docs/API_REQUIREMENTS.md](docs/API_REQUIREMENTS.md).
+Credential wiring (Google service account, Slack, HubSpot, Anthropic):
+[docs/SETUP_CREDENTIALS.md](docs/SETUP_CREDENTIALS.md).
 
 ## Repo layout
 
