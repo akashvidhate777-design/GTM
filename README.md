@@ -1,67 +1,91 @@
-# GTM Outbound Agent
+# GTM Outreach Agent — AI on ERP for Retail Ecosystems
 
-Reads contacts from a Google Sheet, analyzes each contact's persona from their
-title/company, drafts a personalized cold email with Claude, sends it via
-Gmail, and logs a "Sent <timestamp>" status back to the sheet.
+End-to-end outbound system: reads leads from Google Sheets, **scores each lead
+against the ICP** (CEO/CFO/CTO/Founder/VP/Director/Operations), generates a
+personalized **LinkedIn connection message + 2 follow-ups** and a **3-step
+email sequence**, builds an Excel campaign workbook with `Lead Score` and
+`Status` columns, automates sending through **self-hosted n8n** (Gmail +
+Slack + HubSpot), and reports campaign performance daily.
 
-## Sheet format
+**Start here:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system
+orchestration, workflow diagram, scoring model.
+API matrix: [docs/API_REQUIREMENTS.md](docs/API_REQUIREMENTS.md).
 
-| Name | Company | Title | LinkedIn URL | Email | Status |
-|------|---------|-------|--------------|-------|--------|
+## Repo layout
 
-`Status` is created automatically if missing. Rows already marked `Sent ...`
-are skipped on re-runs.
-
-## Setup
-
-1. **Google Cloud OAuth credentials** (used by both Sheets and Gmail):
-   - Go to https://console.cloud.google.com/ → create/select a project.
-   - Enable the **Google Sheets API** and **Gmail API** (APIs & Services → Library).
-   - APIs & Services → Credentials → Create Credentials → OAuth client ID →
-     Application type **Desktop app**.
-   - Download the JSON, save it as `~/.gtm-agent/credentials.json`
-     (or pass `--credentials /path/to/file.json`).
-   - On first run, a browser window opens for you to grant access; the
-     resulting token is cached at `~/.gtm-agent/google-token.json`.
-   - If your Google Cloud OAuth consent screen is in "Testing" mode, add your
-     Gmail address as a test user under OAuth consent screen → Test users.
-
-2. **Anthropic API key**:
-   ```bash
-   export ANTHROPIC_API_KEY=sk-ant-...
-   ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Usage
-
-```bash
-# Preview drafted emails without sending
-python gtm_agent.py --sheet-id <YOUR_SHEET_ID> --dry-run
-
-# Send for real
-python gtm_agent.py --sheet-id <YOUR_SHEET_ID>
-
-# Limit to first N unprocessed contacts
-python gtm_agent.py --sheet-id <YOUR_SHEET_ID> --limit 5
+```
+docs/ARCHITECTURE.md        System orchestration + workflow diagram + scoring model
+docs/API_REQUIREMENTS.md    Every API: auth, scopes, endpoints, rate limits
+outreach_agent/             The agent (scoring, messaging, Excel, reporting, Sheets I/O)
+n8n/                        3 importable workflows (intake+scoring, sequence engine, reporting)
+data/leads.csv              Lead snapshot exported from the Google Sheet (176 leads)
+output/outreach_campaign.xlsx  Generated campaign workbook (scores + all 6 messages + status)
+docker-compose.yml          Local-server hosting: n8n + agent containers
+gtm_agent.py                (v1) simple Sheets -> Claude -> Gmail sender, kept for reference
 ```
 
-The Sheet ID is the long string in the sheet's URL:
-`https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`.
+## Quick start (local, no credentials needed)
 
-## MCP servers (for interactive use inside Claude Code)
+```bash
+pip install -r requirements.txt
+python -m outreach_agent.cli run --input data/leads.csv --out output/outreach_campaign.xlsx
+```
 
-`.claude/settings.json` registers two MCP servers so you can read sheets /
-send mail directly from a Claude Code session, separate from the standalone
-script above (a Python script can't call IDE-level MCP tools, so
-`gtm_agent.py` talks to the Google APIs directly instead):
+This scores all leads, generates every message with the offline template
+engine, and writes:
 
-- `google-sheets` (`mcp-google-sheets`)
-- `gmail` (`@gongrzhe/server-gmail-autoauth-mcp`)
+- `output/outreach_campaign.xlsx` — **Leads & Sequences** (sorted by score,
+  Status dropdown: Draft/Approved/Sent-Step 1-3/Replied/Bounced/Do Not Contact),
+  **Campaign Report** (live COUNTIF funnel), **Config** (weights & cadence)
+- `output/outreach_campaign.csv` — same data, n8n/HubSpot-friendly
+- `output/campaign_report.md` — snapshot report
 
-Both reuse `~/.gtm-agent/credentials.json` for OAuth. The first time either
-server starts inside Claude Code, it will run its own OAuth flow and cache a
-token under `~/.gtm-agent/`.
+### Claude-written copy (recommended for production)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python -m outreach_agent.cli run --use-claude
+```
+
+### Google Sheets in/out
+
+```bash
+# service account (headless server) — share the sheet with the SA email
+export GOOGLE_SERVICE_ACCOUNT_JSON=./secrets/service-account.json
+python -m outreach_agent.cli run --sheet-id $GOOGLE_SHEET_ID --push-sheet
+```
+
+`--push-sheet` writes the added columns (Lead Score, Lead Grade, ICP Tier,
+Persona, News Signal, 3 LinkedIn messages, 3 email subjects+bodies, Status)
+back to the sheet starting at column O.
+
+### Campaign report to Slack
+
+```bash
+export SLACK_BOT_TOKEN=xoxb-...
+python -m outreach_agent.cli report --input data/leads.csv --slack
+```
+
+## Hosting on your local server
+
+```bash
+cp .env.example .env   # fill in tokens
+docker compose up -d   # n8n at http://localhost:5678 + agent container
+```
+
+Then in n8n: **Workflows → Import from file** for each JSON in `n8n/`, attach
+credentials (Google Sheets, Gmail, Slack, HubSpot, Anthropic header auth), and
+activate:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| WF-1 Lead Intake & Scoring | every 6 h + webhook | scores new rows via Claude (with web-search news signal), writes messages back, posts Slack approval |
+| WF-2 Sequence Engine | weekdays 09:30 | Day 0/3/7 cadence: sends email steps via Gmail, DMs you each LinkedIn message to send (no ToS-violating automation), updates Status, syncs HubSpot |
+| WF-3 Campaign Reporting | daily 18:00 | Slack funnel report + HubSpot snapshot note |
+
+## Safety rails
+
+- Nothing sends until Status = **Approved** (Slack approval or sheet edit)
+- Stops on Replied / Bounced / Do Not Contact; opt-out line in email 3
+- Daily send cap (default 30) protects deliverability
+- LinkedIn messages are prepared, never auto-sent
