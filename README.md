@@ -1,67 +1,91 @@
-# GTM Outbound Agent
+# Alepo Outbound Email Agent
 
-Reads contacts from a Google Sheet, analyzes each contact's persona from their
-title/company, drafts a personalized cold email with Claude, sends it via
-Gmail, and logs a "Sent <timestamp>" status back to the sheet.
+Modular pipeline that reads telecom CSP leads from Google Sheets, drafts
+personalized Alepo Digital BSS pitches with OpenAI `gpt-4o`, sends them via
+Gmail, and writes `Email Body` + `Outreach Status` back to the sheet
+line-by-line.
 
 ## Sheet format
 
-| Name | Company | Title | LinkedIn URL | Email | Status |
-|------|---------|-------|--------------|-------|--------|
+| First Name | Company Name | Country | Services | LinkedIn Profile | Email | Email Body | Outreach Status |
+|------------|--------------|---------|----------|------------------|-------|------------|-----------------|
 
-`Status` is created automatically if missing. Rows already marked `Sent ...`
-are skipped on re-runs.
+Rows with a blank `Outreach Status` are processed. After each attempt the
+agent writes `Sent`, `Failed`, or (in dry-run) `Drafted`.
+
+Default spreadsheet:
+`https://docs.google.com/spreadsheets/d/1pDcQrVToC-bsnCjR_X5FpaiP3bKO0Ka-zy9B2V3fOFU`
+
+## Project layout
+
+```
+src/
+  config/
+    settings.py          # dotenv, paths, sheet defaults
+    credentials.json     # Google OAuth Desktop client (you add this)
+    token.json           # created on first auth (gitignored)
+  services/
+    sheets_worker.py     # gspread fetch + status updates
+    gmail_worker.py      # OAuth + Gmail send
+  agents/
+    copywriter.py        # gpt-4o personalized pitch
+  main.py                # orchestration loop
+.cursorrules             # Alepo business + copy rules for Cursor
+.env                     # OPENAI_API_KEY (gitignored)
+```
 
 ## Setup
 
-1. **Google Cloud OAuth credentials** (used by both Sheets and Gmail):
-   - Go to https://console.cloud.google.com/ → create/select a project.
-   - Enable the **Google Sheets API** and **Gmail API** (APIs & Services → Library).
-   - APIs & Services → Credentials → Create Credentials → OAuth client ID →
-     Application type **Desktop app**.
-   - Download the JSON, save it as `~/.gtm-agent/credentials.json`
-     (or pass `--credentials /path/to/file.json`).
-   - On first run, a browser window opens for you to grant access; the
-     resulting token is cached at `~/.gtm-agent/google-token.json`.
-   - If your Google Cloud OAuth consent screen is in "Testing" mode, add your
-     Gmail address as a test user under OAuth consent screen → Test users.
+### 1. Install dependencies
 
-2. **Anthropic API key**:
-   ```bash
-   export ANTHROPIC_API_KEY=sk-ant-...
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 2. Google Cloud credentials
+
+1. Create a Google Cloud project (e.g. `Alepo-Outbound-Agent`).
+2. Enable **Google Sheets API** and **Gmail API**.
+3. Configure the **OAuth consent screen** (External):
+   - Add scopes: `.../auth/gmail.send` and `.../auth/spreadsheets`
+   - Add your sending Gmail as a **Test user**
+4. Create **OAuth client ID** → Application type **Desktop App**.
+5. Download the JSON, rename to `credentials.json`, place at:
+   `src/config/credentials.json`
+
+Share the Google Sheet with the same Google account you authorize.
+
+### 3. Environment variables
+
+```bash
+cp .env.example .env
+# edit .env and set OPENAI_API_KEY=sk-...
+```
 
 ## Usage
 
 ```bash
-# Preview drafted emails without sending
-python gtm_agent.py --sheet-id <YOUR_SHEET_ID> --dry-run
+# First run opens a browser for Google OAuth, then caches token.json
+python src/main.py
 
-# Send for real
-python gtm_agent.py --sheet-id <YOUR_SHEET_ID>
+# Preview pitches without sending (writes Outreach Status = Drafted)
+python src/main.py --dry-run --no-delay
 
-# Limit to first N unprocessed contacts
-python gtm_agent.py --sheet-id <YOUR_SHEET_ID> --limit 5
+# Limit volume / override sheet
+python src/main.py --limit 3 --sheet-id 1pDcQrVToC-bsnCjR_X5FpaiP3bKO0Ka-zy9B2V3fOFU
 ```
 
-The Sheet ID is the long string in the sheet's URL:
-`https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`.
+Between leads the agent sleeps a random **30–90 seconds** (override with
+`--min-delay` / `--max-delay`, or skip with `--no-delay`).
 
-## MCP servers (for interactive use inside Claude Code)
+## Copy structure (from `.cursorrules`)
 
-`.claude/settings.json` registers two MCP servers so you can read sheets /
-send mail directly from a Claude Code session, separate from the standalone
-script above (a Python script can't call IDE-level MCP tools, so
-`gtm_agent.py` talks to the Google APIs directly instead):
+1. Greeting: `Hi [First Name],`
+2. Local research on the operator’s market / services in-country
+3. Fit to Alepo Digital BSS — Omnichannel Customer Engagement
+4. Carrier-grade hook + CTA for a live / discovery demo
 
-- `google-sheets` (`mcp-google-sheets`)
-- `gmail` (`@gongrzhe/server-gmail-autoauth-mcp`)
+## Legacy
 
-Both reuse `~/.gtm-agent/credentials.json` for OAuth. The first time either
-server starts inside Claude Code, it will run its own OAuth flow and cache a
-token under `~/.gtm-agent/`.
+`gtm_agent.py` is the earlier single-file Claude + Sheets/Gmail agent kept for
+reference. Prefer `src/main.py` for the Alepo campaign.

@@ -1,0 +1,16 @@
+# Context Rules for Alepo Outbound Email Agent
+
+## Business Context
+- **Company**: Alepo
+- **Product Offered**: Digital BSS (Business Support Systems)
+- **Target Audience**: Telecom Operators & Communication Service Providers (CSPs) in Africa
+- **Primary Value Hook**: Omnichannel Customer Engagement (AI-powered self-care portals, personalization engines, automated campaigns)
+
+## Core Workflow Rules
+1. **Google Sheets Columns**: Read from: `First Name`, `Company Name`, `Country`, `Services`, `LinkedIn Profile`, `Email`. Write to: `Email Body`, `Outreach Status`.
+2. **Copywriting Format**: 
+   - Greeting: "Hi [First Name],"
+   - Para 1: Deep local research on the operator's specific market penetration and services.
+   - Para 2: Concrete fit matching them to Alepo Digital BSS with strict focus on Omnichannel Customer Engagement.
+   - Para 3: Sharp telco business hook & strong CTA for a live demo.
+3. **Execution Delivery**: Route sent items natively via Gmail API. Update Google Sheet status line-by-line instantly to avoid duplication if an error occurs.
