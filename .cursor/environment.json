@@ -1,0 +1,4 @@
+{
+  "name": "GTM Outbound Agent",
+  "install": "pip install --user -r requirements.txt"
+}
